@@ -5,11 +5,13 @@ interface is what lets us later chain arbitrary topologies
 (Queue -> Workers -> Queue -> Workers -> ...) without changing the engine.
 """
 
+import random
 from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
 from archsim.engine.core import Simulation
+from archsim.engine.distributions import Distribution
 
 
 @dataclass
@@ -39,21 +41,33 @@ class Receiver(Protocol):
 
 
 class Source:
-    """Generates jobs at a constant rate. First arrival at t = 1/rate."""
+    """Generates jobs separated by gaps drawn from `interarrival`.
 
-    def __init__(self, sim: Simulation, rate: float, target: Receiver) -> None:
+    The first job arrives after one gap (t = 1/rate for constant arrivals).
+    """
+
+    def __init__(
+        self,
+        sim: Simulation,
+        interarrival: Distribution,
+        rng: random.Random,
+        target: Receiver,
+    ) -> None:
         self.sim = sim
-        self.rate = rate
+        self.interarrival = interarrival
+        self.rng = rng
         self.target = target
         self.generated: list[Job] = []
+        self._next_time = 0.0
 
     def start(self) -> None:
         self._schedule_next()
 
     def _schedule_next(self) -> None:
-        # Compute absolute time as n / rate to avoid float drift from repeated adds.
-        n = len(self.generated) + 1
-        self.sim.schedule_at(n / self.rate, self._emit)
+        # Round away float drift from repeated adds (e.g. 600 x 0.1 != 60.0),
+        # which would otherwise make arrivals at the horizon flaky.
+        self._next_time = round(self._next_time + self.interarrival.sample(self.rng), 9)
+        self.sim.schedule_at(self._next_time, self._emit)
 
     def _emit(self) -> None:
         job = Job(id=len(self.generated), arrival_time=self.sim.now)
@@ -90,13 +104,15 @@ class WorkerPool:
         sim: Simulation,
         queue: Queue,
         size: int,
-        service_time: float,
+        service_time: Distribution,
+        rng: random.Random,
         downstream: Receiver,
     ) -> None:
         self.sim = sim
         self.queue = queue
         self.size = size
         self.service_time = service_time
+        self.rng = rng
         self.downstream = downstream
         self.busy = 0
         queue.consumer = self
@@ -108,7 +124,7 @@ class WorkerPool:
     def _start(self, job: Job) -> None:
         job.start_time = self.sim.now
         self.busy += 1
-        self.sim.schedule(self.service_time, lambda: self._finish(job))
+        self.sim.schedule(self.service_time.sample(self.rng), lambda: self._finish(job))
 
     def _finish(self, job: Job) -> None:
         job.end_time = self.sim.now

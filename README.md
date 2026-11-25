@@ -43,10 +43,12 @@ Producer ──▶ Queue ──▶ Worker Pool ──▶ Done
 
 You configure:
 
-- **Arrival rate** (events per second)
+- **Arrival rate** (average events per second)
 - **Worker count** (one or several, for comparison)
-- **Processing time** per event
+- **Processing time** (average per event)
 - **Simulation duration**
+- **Variability:** arrivals evenly spaced (`constant`) or random like real traffic (`poisson`); processing time fixed (`constant`) or varying (`exponential`)
+- **Seed** for reproducible random runs. Every configuration in a comparison sees the *same* arrival stream, so differences come from the architecture, not luck.
 
 And get back:
 
@@ -87,6 +89,31 @@ $ archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60 --chart
 
 **Reading the result:** with 5 or 10 workers, utilization is ~100% and the queue grows for the entire run. It never levels off, which means the system will *never* catch up, no matter how long it runs. Latency is dominated by *waiting*, not processing (23s latency for a 2s job). At 20 workers, capacity matches demand: the queue stays empty and latency drops to the bare processing time.
 
+### Example: why "just enough" capacity isn't enough
+
+The run above is deterministic: every job arrives exactly 0.1s apart and takes exactly 2s, so 20 workers handle the load perfectly. Real traffic is bursty and real jobs vary in length. Turn on randomness with the same *average* load:
+
+```
+$ archsim run --rate 10 --workers 20 22 25 --service-time 2 --duration 600 \
+    --arrivals poisson --service exponential --seed 42 --chart random-queue-depth.png
+
+Arrivals: poisson | Processing: exponential | Seed: 42
+
+                    20 workers  22 workers  25 workers
+------------------------------------------------------
+Avg queue depth          29.33        4.66        0.91
+Max queue depth             88          40          22
+Avg wait (s)              2.93        0.47        0.09
+Avg latency (s)           4.89        2.45        2.07
+Utilization               0.98        0.90        0.79
+```
+
+![Queue depth over time with random arrivals and processing times](docs/random-queue-depth.png)
+
+**Reading the result:** with 20 workers, average capacity exactly equals average demand, yet the queue swings up to 88 events and latency is ~2.5x the processing time. Bursts arrive faster than the system can absorb them, and at ~100% utilization there's no spare capacity to drain the backlog afterwards. Adding just 10-25% headroom (22-25 workers) mostly eliminates the queue.
+
+This is one of the most important (and least intuitive) lessons in capacity planning: **systems running near 100% utilization have wait times that grow sharply, even when the averages say there's enough capacity.**
+
 ### Reading the queue depth chart
 
 The summary numbers tell you *whether* there's a problem; the chart's shape tells you *what kind*:
@@ -105,7 +132,8 @@ Even in this first version, ArchSim lets you:
 1. **Replace guesses with numbers.** Capacity questions get a concrete answer in under a second.
 2. **See the cost of under-provisioning.** Not just "it's slow", but *how* slow, how fast the backlog grows, and how many jobs are stuck. The chart makes it visible at a glance, and is easy to drop into a design doc or PR.
 3. **Compare options side by side.** Evaluate several configurations in a single command.
-4. **Build intuition.** The results make queueing behavior (utilization, backlog, wait vs. processing time) visible and explainable.
+4. **Plan for realistic traffic, not averages.** Random arrivals and processing times reveal how much headroom you actually need, a question back-of-envelope math gets wrong.
+5. **Build intuition.** The results make queueing behavior (utilization, backlog, wait vs. processing time) visible and explainable.
 
 ## Quickstart
 
@@ -134,6 +162,7 @@ src/archsim/
   engine/        Pure simulation engine (no I/O)
     core.py        Virtual clock + event scheduler
     components.py  Source, Queue, WorkerPool, Sink
+    distributions.py  Constant and exponential timing
     metrics.py     Time-weighted metric recording
   models.py      Config and result schemas (Pydantic)
   charts.py      Queue depth chart (matplotlib)
@@ -148,19 +177,21 @@ Components connect through a single `receive(job)` interface, so more complex to
 
 The model is deliberately simple. Each assumption will be relaxed over time:
 
-- Constant arrival rate and fixed processing time (no randomness)
+- Arrival rate and average processing time don't change during a run (no traffic spikes yet)
+- Randomness is limited to Poisson arrivals and exponential processing times
 - FIFO queue with unlimited capacity
 - Workers process one event at a time and never fail
 - Single producer, single queue, single worker pool
 - No network latency
 
-Because the model is deterministic, a system running at exactly 100% utilization looks stable. In real systems with variable timing it would not be. Modeling that variability is the next step.
+The engine's results are tested against hand-computed answers for deterministic runs and against queueing theory (the M/M/1 model) for random ones.
 
 ## Roadmap
 
 - [x] Single-pipeline simulation with side-by-side comparison
 - [x] Queue depth chart
-- [ ] Variable arrival and processing times (randomness, traffic spikes)
+- [x] Random arrival and processing times
+- [ ] Traffic spikes and time-varying load
 - [ ] Multi-stage architectures (multiple queues, services, and worker pools)
 - [ ] Failure modeling: worker outages, retries, dead-letter queues
 - [ ] Requirement checks, e.g. "P95 latency under 5s"

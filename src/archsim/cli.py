@@ -2,11 +2,13 @@
 
     archsim run --rate 10 --workers 5 --service-time 2 --duration 60
     archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60
+    archsim run ... --arrivals poisson --service exponential --seed 42
     archsim run ... --json results.json
 """
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 from archsim.models import SimConfig, SimResults
@@ -64,10 +66,27 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--workers", type=int, nargs="+", required=True, help="One or more worker counts to compare")
     p.add_argument("--service-time", type=float, required=True, help="Seconds per event")
     p.add_argument("--duration", type=float, required=True, help="Simulated seconds")
+    p.add_argument(
+        "--arrivals",
+        choices=["constant", "poisson"],
+        default="constant",
+        help="constant: evenly spaced (default); poisson: random, like real traffic",
+    )
+    p.add_argument(
+        "--service",
+        choices=["constant", "exponential"],
+        default="constant",
+        help="constant: fixed processing time (default); exponential: random around the average",
+    )
+    p.add_argument("--seed", type=int, help="Random seed for reproducible runs (random runs only)")
     p.add_argument("--json", type=Path, help="Write full results (incl. timeseries) to this file")
     p.add_argument("--chart", type=Path, help="Save a queue-depth chart (.png or .svg)")
 
     args = parser.parse_args(argv)
+
+    is_random = args.arrivals != "constant" or args.service != "constant"
+    # One shared seed, so every configuration sees the same arrival stream.
+    seed = args.seed if args.seed is not None else (random.randrange(2**31) if is_random else None)
 
     configs = [
         SimConfig(
@@ -76,10 +95,18 @@ def main(argv: list[str] | None = None) -> None:
             workers=w,
             service_time=args.service_time,
             duration=args.duration,
+            arrivals=args.arrivals,
+            service=args.service,
+            seed=seed,
         )
         for w in args.workers
     ]
     results = compare(configs)
+
+    summary = f"Arrivals: {args.arrivals} | Processing: {args.service}"
+    if is_random:
+        summary += f" | Seed: {seed}"
+    print(summary + "\n")
     print_table(results)
 
     if args.json:

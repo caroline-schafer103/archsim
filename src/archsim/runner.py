@@ -4,9 +4,20 @@ This is the seam between the public models and the engine. When we move from
 a fixed pipeline to arbitrary graphs (Phase 2), only `_build` changes.
 """
 
+import random
 from statistics import fmean
 
-from archsim.engine import Queue, Recorder, Simulation, Sink, Source, WorkerPool
+from archsim.engine import (
+    Constant,
+    Distribution,
+    Exponential,
+    Queue,
+    Recorder,
+    Simulation,
+    Sink,
+    Source,
+    WorkerPool,
+)
 from archsim.models import Sample, SimConfig, SimResults
 
 
@@ -14,12 +25,37 @@ def _mean(values: list[float]) -> float:
     return fmean(values) if values else 0.0
 
 
+def _distribution(pattern: str, mean: float) -> Distribution:
+    return Constant(mean) if pattern == "constant" else Exponential(mean)
+
+
 def run(config: SimConfig) -> SimResults:
+    # Pin a seed so every run is reproducible, even if the user didn't pick one.
+    if config.seed is None and config.is_random:
+        config = config.model_copy(update={"seed": random.randrange(2**31)})
+
+    # Separate streams: arrivals stay identical across configs with the same
+    # seed (e.g. different worker counts), so comparisons are apples-to-apples.
+    arrival_rng = random.Random(f"{config.seed}-arrivals")
+    service_rng = random.Random(f"{config.seed}-service")
+
     sim = Simulation()
     sink = Sink()
     queue = Queue(sim)
-    pool = WorkerPool(sim, queue, config.workers, config.service_time, downstream=sink)
-    source = Source(sim, config.arrival_rate, target=queue)
+    pool = WorkerPool(
+        sim,
+        queue,
+        config.workers,
+        _distribution(config.service, config.service_time),
+        service_rng,
+        downstream=sink,
+    )
+    source = Source(
+        sim,
+        _distribution(config.arrivals, 1 / config.arrival_rate),
+        arrival_rng,
+        target=queue,
+    )
     recorder = Recorder(sim, queue, pool)
 
     source.start()

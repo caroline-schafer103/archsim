@@ -51,10 +51,16 @@ def plot_queue_depth(results: list[SimResults], path: Path) -> None:
     first = results[0].config
     title_kw = dict(transform=ax.transAxes, ha="left", va="bottom")
     ax.text(0, 1.10, "Queue depth over time", fontsize=13, color=TEXT_PRIMARY, fontweight="bold", **title_kw)
+    subtitle = (
+        f"Arrivals: {first.arrival_rate:g}/s ({first.arrivals})  ·  "
+        f"Processing: {first.service_time:g}s per event ({first.service})"
+    )
+    if first.is_random:
+        subtitle += f"  ·  Seed: {first.seed}"
     ax.text(
         0,
         1.03,
-        f"Arrivals: {first.arrival_rate:g}/s  ·  Processing: {first.service_time:g}s per event",
+        subtitle,
         fontsize=10,
         color=TEXT_SECONDARY,
         **title_kw,

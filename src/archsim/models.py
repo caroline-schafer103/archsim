@@ -4,17 +4,33 @@ These are Pydantic models so the future API (FastAPI) and UI can reuse them
 directly for validation and JSON serialization.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+ArrivalPattern = Literal["constant", "poisson"]
+ServicePattern = Literal["constant", "exponential"]
 
 
 class SimConfig(BaseModel):
     """MVP pipeline: Source -> Queue -> WorkerPool -> Sink."""
 
     name: str = "baseline"
-    arrival_rate: float = Field(gt=0, description="Events per second (constant)")
+    arrival_rate: float = Field(gt=0, description="Average events per second")
     workers: int = Field(ge=1, description="Number of parallel workers")
-    service_time: float = Field(gt=0, description="Seconds to process one event")
+    service_time: float = Field(gt=0, description="Average seconds to process one event")
     duration: float = Field(gt=0, description="Simulated seconds to run")
+    arrivals: ArrivalPattern = Field(
+        "constant", description="constant: evenly spaced; poisson: random, independent arrivals"
+    )
+    service: ServicePattern = Field(
+        "constant", description="constant: every event takes service_time; exponential: random around it"
+    )
+    seed: int | None = Field(None, description="Random seed; same seed gives identical runs")
+
+    @property
+    def is_random(self) -> bool:
+        return self.arrivals != "constant" or self.service != "constant"
 
 
 class Sample(BaseModel):
