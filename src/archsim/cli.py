@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--service-time", type=float, required=True, help="Seconds per event")
     p.add_argument("--duration", type=float, required=True, help="Simulated seconds")
     p.add_argument("--json", type=Path, help="Write full results (incl. timeseries) to this file")
+    p.add_argument("--chart", type=Path, help="Save a queue-depth chart (.png or .svg)")
 
     args = parser.parse_args(argv)
 
@@ -84,6 +85,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.json:
         args.json.write_text(json.dumps([r.model_dump() for r in results], indent=2))
         print(f"\nWrote {args.json}")
+
+    if args.chart:
+        from archsim.charts import plot_queue_depth  # lazy: matplotlib is slow to import
+
+        plot_queue_depth(results, args.chart)
+        print(f"\nWrote {args.chart}")
 
 
 if __name__ == "__main__":

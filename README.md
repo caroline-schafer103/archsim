@@ -54,7 +54,8 @@ And get back:
 - Average and maximum queue depth (time-weighted)
 - Average wait, processing time, and end-to-end latency
 - Throughput and worker utilization
-- A full timeseries of queue depth and busy workers (JSON export)
+- A queue depth chart comparing every configuration (`--chart`, PNG or SVG)
+- A full timeseries of queue depth and busy workers (`--json`)
 
 ### Example: sizing a worker pool
 
@@ -76,14 +77,33 @@ Throughput (/s)          2.42        4.83        9.67
 Utilization              0.99        0.99        0.98
 ```
 
-**Reading the result:** with 5 or 10 workers, utilization is ~100% and the queue grows for the entire run. Latency is dominated by *waiting*, not processing (23s latency for a 2s job). At 20 workers, capacity matches demand and latency drops to the bare processing time.
+Add `--chart` to see how the backlog evolves:
+
+```
+$ archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60 --chart queue-depth.png
+```
+
+![Queue depth over time for 5, 10 and 20 workers](docs/queue-depth.png)
+
+**Reading the result:** with 5 or 10 workers, utilization is ~100% and the queue grows for the entire run. It never levels off, which means the system will *never* catch up, no matter how long it runs. Latency is dominated by *waiting*, not processing (23s latency for a 2s job). At 20 workers, capacity matches demand: the queue stays empty and latency drops to the bare processing time.
+
+### Reading the queue depth chart
+
+The summary numbers tell you *whether* there's a problem; the chart's shape tells you *what kind*:
+
+| Shape | Meaning |
+|---|---|
+| Steady upward slope | Under capacity. The backlog grows forever; add capacity or reduce work per event. |
+| Flat at zero | Enough capacity. If utilization is also low, you may be over-provisioned. |
+| Spike, then drain | A burst the system recovers from. The width of the spike is your recovery time. |
+| Hovering above zero | Running near capacity. Works today, but fragile under any increase or variability. |
 
 ## Value today
 
 Even in this first version, ArchSim lets you:
 
 1. **Replace guesses with numbers.** Capacity questions get a concrete answer in under a second.
-2. **See the cost of under-provisioning.** Not just "it's slow", but *how* slow, how fast the backlog grows, and how many jobs are stuck.
+2. **See the cost of under-provisioning.** Not just "it's slow", but *how* slow, how fast the backlog grows, and how many jobs are stuck. The chart makes it visible at a glance, and is easy to drop into a design doc or PR.
 3. **Compare options side by side.** Evaluate several configurations in a single command.
 4. **Build intuition.** The results make queueing behavior (utilization, backlog, wait vs. processing time) visible and explainable.
 
@@ -100,6 +120,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 
 archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60
+archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60 --chart queue-depth.png
 archsim run --rate 10 --workers 20 --service-time 2 --duration 60 --json results.json
 pytest
 ```
@@ -115,6 +136,7 @@ src/archsim/
     components.py  Source, Queue, WorkerPool, Sink
     metrics.py     Time-weighted metric recording
   models.py      Config and result schemas (Pydantic)
+  charts.py      Queue depth chart (matplotlib)
   runner.py      Builds the architecture from config and runs it
   cli.py         Command-line interface
 tests/           Results verified against hand-computed answers
@@ -137,7 +159,7 @@ Because the model is deterministic, a system running at exactly 100% utilization
 ## Roadmap
 
 - [x] Single-pipeline simulation with side-by-side comparison
-- [ ] Queue depth charts and CSV export
+- [x] Queue depth chart
 - [ ] Variable arrival and processing times (randomness, traffic spikes)
 - [ ] Multi-stage architectures (multiple queues, services, and worker pools)
 - [ ] Failure modeling: worker outages, retries, dead-letter queues
