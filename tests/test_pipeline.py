@@ -7,7 +7,7 @@ from archsim import SimConfig, run
 
 def cfg(**overrides) -> SimConfig:
     base = dict(arrival_rate=10, workers=5, service_time=2, duration=60)
-    return SimConfig(**{**base, **overrides})
+    return SimConfig.single_stage(**{**base, **overrides})
 
 
 def test_prd_overloaded_example():
@@ -17,9 +17,9 @@ def test_prd_overloaded_example():
     # Each worker starts its first job at 0.1..0.5s, then finishes one every 2s:
     # 29 completions per worker by t=60.
     assert r.completed == 145
-    assert r.utilization == pytest.approx(1.0, abs=0.01)
+    assert r.stages[0].utilization == pytest.approx(1.0, abs=0.01)
     assert r.max_queue_depth > 400  # backlog grows continuously
-    assert r.avg_latency > r.config.service_time
+    assert r.avg_latency > 2.0  # waiting adds to the 2s processing time
 
 
 def test_enough_workers_keeps_queue_empty():
@@ -38,7 +38,7 @@ def test_underloaded_system():
     assert r.max_queue_depth == 0
     assert r.avg_latency == pytest.approx(2.0)
     # Busy time: 58 jobs x 2s + 1s of job 59 = 117s out of 5 x 60 = 300s.
-    assert r.utilization == pytest.approx(117 / 300)
+    assert r.stages[0].utilization == pytest.approx(117 / 300)
 
 
 @pytest.mark.parametrize("workers", [1, 5, 20, 50])

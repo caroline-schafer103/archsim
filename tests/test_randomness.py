@@ -7,7 +7,7 @@ from archsim import SimConfig, run
 
 def cfg(**overrides) -> SimConfig:
     base = dict(arrival_rate=10, workers=20, service_time=2, duration=60, arrivals="poisson", service="exponential")
-    return SimConfig(**{**base, **overrides})
+    return SimConfig.single_stage(**{**base, **overrides})
 
 
 def test_same_seed_same_results():
@@ -20,7 +20,7 @@ def test_different_seeds_differ():
 
 def test_seed_is_recorded_when_not_given():
     r = run(cfg())
-    assert r.config.seed is not None
+    assert r.config.workload.seed is not None
     assert run(r.config) == r  # the recorded seed reproduces the run
 
 
@@ -46,12 +46,12 @@ def test_mm1_wait_matches_theory():
     # Theory: mean wait in queue = rho / (mu - lambda) = 0.5 / 0.5 = 1s.
     r = run(cfg(seed=5, arrival_rate=0.5, workers=1, service_time=1, duration=200_000))
     assert r.avg_wait_time == pytest.approx(1.0, rel=0.05)
-    assert r.utilization == pytest.approx(0.5, rel=0.03)
+    assert r.stages[0].utilization == pytest.approx(0.5, rel=0.03)
 
 
 def test_variability_creates_queueing_at_full_capacity():
     # Deterministic: 20 workers exactly match 10/s, so nobody waits.
-    steady = run(SimConfig(arrival_rate=10, workers=20, service_time=2, duration=600))
+    steady = run(SimConfig.single_stage(arrival_rate=10, workers=20, service_time=2, duration=600))
     assert steady.avg_wait_time == pytest.approx(0, abs=1e-9)
     # Same averages, but random: a queue builds up.
     noisy = run(cfg(seed=6, duration=600))

@@ -1,0 +1,36 @@
+# Video upload pipeline (a classic "design YouTube" interview question):
+#
+#   upload -> [upload queue]    -> upload workers     validate, virus-scan, store original
+#          -> [transcode queue] -> transcode workers  encode into 1080p/720p/480p/...
+#          -> [publish queue]   -> publish workers    thumbnails, CDN push, notify subscribers
+#
+#   archsim run examples/video-upload.yaml
+#   archsim run examples/video-upload.yaml --vary transcode.workers=150,200,250 --chart chart.png
+
+name: video-upload
+
+workload:
+  rate: 2               # uploads per second, on average
+  arrivals: poisson     # random, like real traffic
+  duration: 1800        # simulate 30 minutes
+  seed: 42              # same seed = same results
+  spikes:
+    - start: 600        # a big creator event at t=10min...
+      duration: 300     # ...lasting 5 minutes...
+      multiplier: 2     # ...doubles uploads
+
+stages:
+  - name: upload
+    workers: 10         # capacity: 10 / 1s = 10 uploads per second
+    service_time: 1
+    service: exponential
+
+  - name: transcode
+    workers: 150        # capacity: 150 / 60s = 2.5 videos per second
+    service_time: 60
+    service: exponential
+
+  - name: publish
+    workers: 12         # capacity: 12 / 4s = 3 videos per second
+    service_time: 4
+    service: exponential

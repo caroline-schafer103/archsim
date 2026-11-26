@@ -2,13 +2,13 @@
 
 **Find the bottleneck in your event-driven architecture before your users do.**
 
-ArchSim simulates backend systems built on queues and workers. Describe your workload and capacity, and see in seconds where work piles up, how long jobs wait, and how much headroom you actually need, without deploying anything.
+ArchSim simulates backend systems built on queues and workers. Describe your architecture and workload in a short YAML file, and see in seconds where work piles up, which stage is the bottleneck, and how much capacity you actually need, without deploying anything.
 
-![Queue depth during and after a 2x traffic spike](docs/spike-queue-depth.png)
+![Queue depth by stage for a video upload pipeline](docs/video-upload.png)
 
 ## Why
 
-Capacity decisions are usually guesses: *How many workers do we need? Will the queue back up at peak? If traffic doubles for a minute, how long until we recover?* Architecture diagrams show what exists, not how it behaves under load, and load tests only work once the infrastructure is built. ArchSim makes those questions cheap to answer.
+Capacity decisions are usually guesses: *How many workers do we need? Which service is holding everything up? If traffic doubles for a minute, how long until we recover?* Architecture diagrams show what exists, not how it behaves under load, and load tests only work once the infrastructure is built. ArchSim makes those questions cheap to answer.
 
 Built for backend engineers sizing worker pools, tech leads checking capacity plans, and anyone building intuition for system design.
 
@@ -21,46 +21,90 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1        # macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
 
-archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60 --chart chart.png
+archsim run examples/video-upload.yaml --chart chart.png
 ```
 
-## Example: recovering from a traffic spike
+## Describing an architecture
 
-Jobs arrive at ~10/s and take ~2s each. Traffic doubles for one minute. How many workers do we need?
+An architecture is a workload flowing through stages in order. Each stage is a queue plus a pool of workers. Here's the upload pipeline from the classic "design YouTube" interview question ([full file](examples/video-upload.yaml)):
+
+```yaml
+workload:
+  rate: 2               # uploads per second, on average
+  arrivals: poisson     # random, like real traffic
+  duration: 1800        # 30 minutes
+  spikes: [{start: 600, duration: 300, multiplier: 2}]   # a big creator event
+
+stages:
+  - name: upload        # validate, virus-scan, store original
+    workers: 10
+    service_time: 1     # seconds per event, on average
+  - name: transcode     # encode into 1080p/720p/480p/...
+    workers: 150
+    service_time: 60
+  - name: publish       # thumbnails, CDN push, notify subscribers
+    workers: 12
+    service_time: 4
+```
+
+Compare variations with `--vary`, e.g. `--vary transcode.workers=150,200,250` or `--vary workload.rate=2,3,4`.
+
+## Example: design YouTube's upload pipeline
+
+Uploads double for five minutes during a big creator event. Transcoding is the obvious bottleneck, so let's add workers:
+
+```
+$ archsim run examples/video-upload.yaml --vary transcode.workers=150,200,250
+
+                    150 transcode workers  200 transcode workers  250 transcode workers
+---------------------------------------------------------------------------------------
+P95 latency (s)                    253.22                 214.07                 214.26
+Spike recovery (s)                 597.11                 316.96                 317.00
+[transcode]
+  Max queue depth                     412                    162                     22
+  Utilization                        0.90                   0.67                   0.54
+[publish]
+  Max queue depth                      32                    177                    284
+  Utilization                        0.75                   0.75                   0.75
+Bottleneck                      transcode                publish                publish
+```
+
+**Scaling transcode helps, then stops helping.** 200 workers halve the recovery time, but 250 change nothing. With 150 workers, transcode was throttling the burst and shielding publish from it. Give transcode more capacity and the burst flows straight through to publish, which becomes the new bottleneck (see the chart above). ArchSim names the bottleneck for every configuration, so you can follow it as it moves.
+
+Scaling **both** stages fixes it: 250 transcode and 16 publish workers cut recovery from 10 minutes to 41 seconds.
+
+**Bonus insight:** P95 latency never drops much below 3 minutes, however many workers you add. Once nothing is waiting, latency is just processing time, and a long video takes a long time to transcode. More workers can't fix that; the architectural fix is to **split each video into chunks and transcode them in parallel**, which is what real video platforms do.
+
+## Quick single-stage runs
+
+For a single queue and worker pool, skip the file and use flags:
 
 ```
 $ archsim run --rate 10 --workers 22 25 30 --service-time 2 --duration 600 \
-    --arrivals poisson --service exponential --seed 42 --spike 200:60:2 --chart spike.png
+    --arrivals poisson --service exponential --seed 42 --spike 200:60:2
 
                     22 workers  25 workers  30 workers
 ------------------------------------------------------
-Max queue depth            474         375         238
-P50 latency (s)          20.98        3.03        1.98
 P95 latency (s)          39.83       26.94       13.21
-Utilization               0.97        0.87        0.73
 Spike recovery (s)       never      134.02       33.95
 ```
 
-All three handle normal traffic and all three back up during the spike (the chart above). The difference is **spare capacity** afterwards: 30 workers recover in ~34s, 25 take over two minutes, and 22 are still recovering five minutes later. P95 shows what averages hide: with 25 workers the median job takes 3s, but 1 in 20 takes 27s or more.
-
-A related, less intuitive lesson: with random traffic, capacity that *exactly* matches average demand isn't enough. At 20 workers (100% utilization) the queue swings up to 88 jobs and latency is ~2.5x the processing time; 10-25% headroom mostly eliminates it.
+Recovery depends on **spare capacity**: 30 workers recover from the spike in ~34s; 22 are still recovering five minutes later. And with random traffic, capacity that *exactly* matches average demand isn't enough: at 100% utilization, queues swing wildly; 10-25% headroom mostly eliminates them.
 
 ## Options
 
 | Option | Meaning |
 |---|---|
-| `--rate` | Average arrivals per second |
-| `--workers` | One or more worker counts to compare side by side |
-| `--service-time` | Average seconds to process one event |
-| `--duration` | Simulated seconds |
-| `--arrivals` | `constant` (evenly spaced) or `poisson` (random, like real traffic) |
-| `--service` | `constant` or `exponential` (random around the average) |
+| `FILE` | Architecture YAML file (see `examples/`) |
+| `--vary` | `STAGE.FIELD=V1,V2,...` to compare variations (`workers`, `service_time`, `service`, or `workload.rate`/`duration`/`arrivals`) |
+| `--rate`, `--workers`, `--service-time`, `--duration` | Single-stage run without a file (`--workers` takes several values to compare) |
+| `--arrivals`, `--service` | Single-stage randomness: `constant`, `poisson` / `exponential` |
 | `--seed` | Reproducible random runs; all configurations share one arrival stream |
 | `--spike` | `START:DURATION:MULTIPLIER`, e.g. `200:60:2` (repeatable) |
-| `--chart` | Save a queue depth chart (PNG/SVG) |
-| `--json` | Save full results, including the timeseries |
+| `--chart` | Save a queue depth chart, one panel per stage (PNG/SVG) |
+| `--json` | Save full results, including per-stage timeseries |
 
-Results include throughput, utilization, queue depth, wait time, average and P50/P95/P99 latency, and spike recovery time. ArchSim warns when many events never finished, since latency then understates the real delay.
+Results include end-to-end latency (average, P50/P95/P99), throughput, and spike recovery time, plus per-stage queue depth, wait time, and utilization, and the bottleneck stage. ArchSim warns when many events never finished, since latency then understates the real delay.
 
 ### Reading the chart
 
@@ -73,15 +117,16 @@ Results include throughput, utilization, queue depth, wait time, average and P50
 
 ## How it works
 
-ArchSim is a **discrete-event simulator**: a virtual clock jumps between scheduled events (a job arrives, a job finishes), so an hour of traffic runs in milliseconds. The engine (`src/archsim/engine/`) is independent of the CLI, and components connect through a single `receive(job)` interface so larger topologies can be composed from the same parts. Results are tested against hand-computed answers and queueing theory (M/M/1).
+ArchSim is a **discrete-event simulator**: a virtual clock jumps between scheduled events (a job arrives, a job finishes), so an hour of traffic runs in milliseconds. The engine (`src/archsim/engine/`) is independent of the CLI, and every component connects through a single `receive(job)` interface, so stages chain together from the same parts. Results are tested against hand-computed answers and queueing theory (M/M/1).
 
-Current simplifications: a single queue and worker pool, FIFO with unlimited capacity, workers that never fail, and spikes as instant step changes.
+Current simplifications: stages run in a straight line (no branching), queues are FIFO with unlimited capacity, workers never fail, and spikes are instant step changes.
 
 ## Roadmap
 
 - [x] Side-by-side comparison, queue depth chart
 - [x] Random traffic, spikes and recovery time, latency percentiles
-- [ ] Multi-stage architectures (multiple queues, services, worker pools)
+- [x] Multi-stage pipelines with bottleneck detection
+- [ ] Branching architectures (fan-out, routing between services)
 - [ ] Failure modeling: worker outages, retries, dead-letter queues
 - [ ] Requirement checks, e.g. "P95 latency under 5s"
 - [ ] Web UI and API

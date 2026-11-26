@@ -8,7 +8,7 @@ interface is what lets us later chain arbitrary topologies
 import random
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from archsim.engine.core import Simulation
@@ -17,25 +17,43 @@ from archsim.engine.rates import RateSchedule
 
 
 @dataclass
-class Job:
-    id: int
-    arrival_time: float
-    start_time: float | None = None
-    end_time: float | None = None
+class Visit:
+    """One job's pass through one stage (queue + workers)."""
+
+    stage: str
+    enqueued: float
+    started: float | None = None
+    finished: float | None = None
 
     @property
     def wait_time(self) -> float | None:
-        return None if self.start_time is None else self.start_time - self.arrival_time
+        return None if self.started is None else self.started - self.enqueued
 
     @property
     def processing_time(self) -> float | None:
-        if self.start_time is None or self.end_time is None:
+        if self.started is None or self.finished is None:
             return None
-        return self.end_time - self.start_time
+        return self.finished - self.started
+
+
+@dataclass
+class Job:
+    id: int
+    arrival_time: float
+    end_time: float | None = None  # set when the job leaves the system
+    visits: list[Visit] = field(default_factory=list)
 
     @property
     def latency(self) -> float | None:
         return None if self.end_time is None else self.end_time - self.arrival_time
+
+    @property
+    def total_wait(self) -> float:
+        return sum(v.wait_time for v in self.visits if v.wait_time is not None)
+
+    @property
+    def total_processing(self) -> float:
+        return sum(v.processing_time for v in self.visits if v.processing_time is not None)
 
 
 class Receiver(Protocol):
@@ -93,17 +111,22 @@ class Source:
 
 
 class Queue:
-    """FIFO buffer. Notifies its consumer whenever work arrives."""
+    """FIFO buffer in front of a stage. Notifies its consumer whenever work arrives."""
 
-    def __init__(self, sim: Simulation) -> None:
+    def __init__(self, sim: Simulation, stage: str) -> None:
         self.sim = sim
+        self.stage = stage
         self._items: deque[Job] = deque()
         self.consumer: "WorkerPool | None" = None
+        self.visits: list[Visit] = []  # every job that has entered this stage
 
     def __len__(self) -> int:
         return len(self._items)
 
     def receive(self, job: Job) -> None:
+        visit = Visit(stage=self.stage, enqueued=self.sim.now)
+        job.visits.append(visit)
+        self.visits.append(visit)
         self._items.append(job)
         if self.consumer:
             self.consumer.pull()
@@ -138,22 +161,24 @@ class WorkerPool:
             self._start(self.queue.pop())
 
     def _start(self, job: Job) -> None:
-        job.start_time = self.sim.now
+        job.visits[-1].started = self.sim.now
         self.busy += 1
         self.sim.schedule(self.service_time.sample(self.rng), lambda: self._finish(job))
 
     def _finish(self, job: Job) -> None:
-        job.end_time = self.sim.now
+        job.visits[-1].finished = self.sim.now
         self.busy -= 1
         self.downstream.receive(job)
         self.pull()
 
 
 class Sink:
-    """Terminal node: collects completed jobs."""
+    """Terminal node: collects jobs that have left the system."""
 
-    def __init__(self) -> None:
+    def __init__(self, sim: Simulation) -> None:
+        self.sim = sim
         self.completed: list[Job] = []
 
     def receive(self, job: Job) -> None:
+        job.end_time = self.sim.now
         self.completed.append(job)
