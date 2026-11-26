@@ -222,7 +222,19 @@ def main(argv: list[str] | None = None) -> None:
     common.add_argument("--json", type=Path, help="Write full results (incl. timeseries) to this file")
     common.add_argument("--chart", type=Path, help="Save a queue-depth chart (.png or .svg)")
 
+    s = sub.add_parser("serve", help="Start the web UI and API")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8000)
+    s.add_argument("--reload", action="store_true", help="Restart on code changes (development)")
+
     args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        import uvicorn
+
+        print(f"ArchSim running at http://{args.host}:{args.port}")
+        uvicorn.run("archsim.api:app", host=args.host, port=args.port, reload=args.reload)
+        return
 
     try:
         configs = build_configs(args, parser)

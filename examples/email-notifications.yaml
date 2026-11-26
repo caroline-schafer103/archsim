@@ -1,0 +1,26 @@
+# Email notifications
+# A background job queue sending transactional emails through a provider API.
+# A marketing blast triples traffic for two minutes.
+#
+#   app -> [email queue] -> email workers (render template + call provider API)
+#
+#   archsim run examples/email-notifications.yaml
+#   archsim run examples/email-notifications.yaml --vary send.workers=60,70,80
+
+name: email-notifications
+
+workload:
+  rate: 50              # emails per second, on average
+  arrivals: poisson
+  duration: 600         # 10 minutes
+  seed: 7
+  spikes:
+    - start: 180
+      duration: 120
+      multiplier: 3
+
+stages:
+  - name: send
+    workers: 50         # capacity: 50 / 0.8s = 62.5 emails per second
+    service_time: 0.8
+    service: exponential

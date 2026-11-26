@@ -2,9 +2,9 @@
 
 **Find the bottleneck in your event-driven architecture before your users do.**
 
-ArchSim simulates backend systems built on queues and workers. Describe your architecture and workload in a short YAML file, and see in seconds where work piles up, which stage is the bottleneck, and how much capacity you actually need, without deploying anything.
+ArchSim simulates backend systems built on queues and workers. Describe your architecture and workload in the web UI or a short YAML file, and see in seconds where work piles up, which stage is the bottleneck, and how much capacity you actually need, without deploying anything.
 
-![Queue depth by stage for a video upload pipeline](docs/video-upload.png)
+![ArchSim web UI showing a video upload pipeline with transcode as the bottleneck](docs/web-ui.png)
 
 ## Why
 
@@ -14,15 +14,22 @@ Built for backend engineers sizing worker pools, tech leads checking capacity pl
 
 ## Quickstart
 
-Requires Python 3.11+.
+Requires Python 3.11+ and Node 18+ (for the web UI).
 
 ```bash
 python -m venv .venv
 .venv\Scripts\Activate.ps1        # macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
 
+# Web UI: build once, then serve UI + API at http://localhost:8000
+cd web && npm install && npm run build && cd ..
+archsim serve
+
+# Or the CLI
 archsim run examples/video-upload.yaml --chart chart.png
 ```
+
+The UI lets you pick an example, edit the workload and stages, compare worker counts, and see the pipeline, bottleneck, and per-stage queue charts update. For frontend development, run `archsim serve --reload` and `npm run dev` (in `web/`) side by side; Vite proxies `/api` to the Python server.
 
 ## Describing an architecture
 
@@ -69,7 +76,9 @@ Spike recovery (s)                 597.11                 316.96                
 Bottleneck                      transcode                publish                publish
 ```
 
-**Scaling transcode helps, then stops helping.** 200 workers halve the recovery time, but 250 change nothing. With 150 workers, transcode was throttling the burst and shielding publish from it. Give transcode more capacity and the burst flows straight through to publish, which becomes the new bottleneck (see the chart above). ArchSim names the bottleneck for every configuration, so you can follow it as it moves.
+**Scaling transcode helps, then stops helping.** 200 workers halve the recovery time, but 250 change nothing. With 150 workers, transcode was throttling the burst and shielding publish from it. Give transcode more capacity and the burst flows straight through to publish, which becomes the new bottleneck. ArchSim names the bottleneck for every configuration, so you can follow it as it moves.
+
+![Queue depth by stage: adding transcode workers moves the backlog to publish](docs/video-upload.png)
 
 Scaling **both** stages fixes it: 250 transcode and 16 publish workers cut recovery from 10 minutes to 41 seconds.
 
@@ -117,7 +126,7 @@ Results include end-to-end latency (average, P50/P95/P99), throughput, and spike
 
 ## How it works
 
-ArchSim is a **discrete-event simulator**: a virtual clock jumps between scheduled events (a job arrives, a job finishes), so an hour of traffic runs in milliseconds. The engine (`src/archsim/engine/`) is independent of the CLI, and every component connects through a single `receive(job)` interface, so stages chain together from the same parts. Results are tested against hand-computed answers and queueing theory (M/M/1).
+ArchSim is a **discrete-event simulator**: a virtual clock jumps between scheduled events (a job arrives, a job finishes), so an hour of traffic runs in milliseconds. The engine (`src/archsim/engine/`) is independent of the interfaces: the CLI and a FastAPI server (`src/archsim/api.py`) share the same Pydantic models, and the React + TypeScript UI (`web/`) talks to the API. Every component connects through a single `receive(job)` interface, so stages chain together from the same parts. Results are tested against hand-computed answers and queueing theory (M/M/1).
 
 Current simplifications: stages run in a straight line (no branching), queues are FIFO with unlimited capacity, workers never fail, and spikes are instant step changes.
 
@@ -129,5 +138,6 @@ Current simplifications: stages run in a straight line (no branching), queues ar
 - [ ] Branching architectures (fan-out, routing between services)
 - [ ] Failure modeling: worker outages, retries, dead-letter queues
 - [ ] Requirement checks, e.g. "P95 latency under 5s"
-- [ ] Web UI and API
+- [x] Web UI and API
+- [ ] Hosted live demo
 - [ ] Architecture recommendations

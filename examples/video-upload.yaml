@@ -1,4 +1,7 @@
-# Video upload pipeline (a classic "design YouTube" interview question):
+# Video upload pipeline
+# The classic "design YouTube" interview question: uploads are validated,
+# transcoded into several resolutions, then published. A big creator event
+# doubles uploads for five minutes.
 #
 #   upload -> [upload queue]    -> upload workers     validate, virus-scan, store original
 #          -> [transcode queue] -> transcode workers  encode into 1080p/720p/480p/...
