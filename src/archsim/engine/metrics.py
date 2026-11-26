@@ -1,7 +1,43 @@
 """Time-weighted metrics recorded as the simulation runs."""
 
+import math
+
 from archsim.engine.components import Queue, WorkerPool
 from archsim.engine.core import Simulation
+
+
+def percentile(values: list[float], p: float) -> float:
+    """Nearest-rank percentile: the smallest value >= p% of the data."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, math.ceil(p / 100 * len(ordered)))
+    return ordered[rank - 1]
+
+
+def recovery_time(samples: list[tuple[float, int, int]], start: float, end: float) -> float | None:
+    """Seconds after `end` until queue depth returns to its level at `start`.
+
+    `samples` are (time, queue_depth, busy_workers) change points, in time order.
+    Returns 0 if the queue never rose above its starting level, None if it
+    never recovered within the simulation.
+    """
+    baseline = 0
+    for t, depth, _ in samples:
+        if t > start:
+            break
+        baseline = depth
+
+    depth_at_end = baseline
+    for t, depth, _ in samples:
+        if t <= end:
+            depth_at_end = depth
+            continue
+        if depth_at_end <= baseline:
+            return 0.0
+        if depth <= baseline:
+            return t - end
+    return 0.0 if depth_at_end <= baseline else None
 
 
 class Recorder:

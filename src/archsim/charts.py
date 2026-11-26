@@ -16,6 +16,7 @@ SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#1f1f1e"
 TEXT_SECONDARY = "#5f5e5a"
 GRID = "#e4e3df"
+SPIKE_FILL = "#efeeea"
 
 
 def _label(r: SimResults) -> str:
@@ -32,21 +33,47 @@ def plot_queue_depth(results: list[SimResults], path: Path) -> None:
     ax.set_facecolor(SURFACE)
 
     end = max(r.config.duration for r in results)
+
+    # Shade spike windows so cause (more traffic) sits next to effect (backlog).
+    for spike in results[0].config.spikes:
+        ax.axvspan(spike.start, spike.end, color=SPIKE_FILL, zorder=0, linewidth=0)
+        ax.text(
+            (spike.start + spike.end) / 2,
+            0.98,
+            f"{spike.multiplier:g}x traffic",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=9,
+            color=TEXT_SECONDARY,
+        )
+
+    ends: list[tuple[float, float, str]] = []
     for r, color in zip(results, SERIES_COLORS):
         times = [s.time for s in r.timeseries]
         depths = [s.queue_depth for s in r.timeseries]
         # zorder/clip_on keep a line sitting at 0 visible on top of the axis.
         ax.step(times, depths, where="post", color=color, linewidth=2, label=_label(r), zorder=3, clip_on=False)
-        # Direct label at the line's end so identity isn't color-only.
+        ends.append((times[-1], depths[-1], r.config.name))
+
+    # Direct labels at each line's end so identity isn't color-only,
+    # nudged apart vertically when lines end at similar depths.
+    ax.set_ylim(bottom=0)
+    min_gap = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.045
+    prev_y = float("-inf")
+    for x, y, name in sorted(ends, key=lambda e: e[1]):
+        label_y = max(y, prev_y + min_gap)
         ax.annotate(
-            r.config.name,
-            xy=(times[-1], depths[-1]),
+            name,
+            xy=(x, label_y),
             xytext=(6, 0),
             textcoords="offset points",
             va="center",
             fontsize=9,
             color=TEXT_PRIMARY,
+            annotation_clip=False,
         )
+        prev_y = label_y
 
     first = results[0].config
     title_kw = dict(transform=ax.transAxes, ha="left", va="bottom")

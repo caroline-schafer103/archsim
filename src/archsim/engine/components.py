@@ -7,11 +7,13 @@ interface is what lets us later chain arbitrary topologies
 
 import random
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from archsim.engine.core import Simulation
 from archsim.engine.distributions import Distribution
+from archsim.engine.rates import RateSchedule
 
 
 @dataclass
@@ -41,20 +43,24 @@ class Receiver(Protocol):
 
 
 class Source:
-    """Generates jobs separated by gaps drawn from `interarrival`.
+    """Generates jobs following a (possibly time-varying) arrival rate.
 
+    `gap_for(mean)` returns the distribution of gaps between arrivals for a
+    given mean gap: Constant for evenly spaced, Exponential for Poisson.
     The first job arrives after one gap (t = 1/rate for constant arrivals).
     """
 
     def __init__(
         self,
         sim: Simulation,
-        interarrival: Distribution,
+        rates: RateSchedule,
+        gap_for: Callable[[float], Distribution],
         rng: random.Random,
         target: Receiver,
     ) -> None:
         self.sim = sim
-        self.interarrival = interarrival
+        self.rates = rates
+        self.gap_for = gap_for
         self.rng = rng
         self.target = target
         self.generated: list[Job] = []
@@ -64,10 +70,20 @@ class Source:
         self._schedule_next()
 
     def _schedule_next(self) -> None:
-        # Round away float drift from repeated adds (e.g. 600 x 0.1 != 60.0),
-        # which would otherwise make arrivals at the horizon flaky.
-        self._next_time = round(self._next_time + self.interarrival.sample(self.rng), 9)
-        self.sim.schedule_at(self._next_time, self._emit)
+        t = self._next_time
+        while True:
+            gap = self.gap_for(1 / self.rates.rate_at(t)).sample(self.rng)
+            # Round away float drift from repeated adds (e.g. 600 x 0.1 != 60.0),
+            # which would otherwise make arrivals at the horizon flaky.
+            candidate = round(t + gap, 9)
+            change = self.rates.next_change_after(t)
+            if change is None or candidate <= change:
+                break
+            # The rate changes before this arrival: redraw from the change point
+            # at the new rate. Exact for Poisson arrivals (they're memoryless).
+            t = change
+        self._next_time = candidate
+        self.sim.schedule_at(candidate, self._emit)
 
     def _emit(self) -> None:
         job = Job(id=len(self.generated), arrival_time=self.sim.now)

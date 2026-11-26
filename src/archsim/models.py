@@ -12,6 +12,18 @@ ArrivalPattern = Literal["constant", "poisson"]
 ServicePattern = Literal["constant", "exponential"]
 
 
+class Spike(BaseModel):
+    """A period of increased (or reduced) traffic."""
+
+    start: float = Field(ge=0, description="Seconds into the simulation")
+    duration: float = Field(gt=0, description="Seconds the spike lasts")
+    multiplier: float = Field(gt=0, description="Arrival rate multiplier, e.g. 3 = triple traffic")
+
+    @property
+    def end(self) -> float:
+        return self.start + self.duration
+
+
 class SimConfig(BaseModel):
     """MVP pipeline: Source -> Queue -> WorkerPool -> Sink."""
 
@@ -27,6 +39,7 @@ class SimConfig(BaseModel):
         "constant", description="constant: every event takes service_time; exponential: random around it"
     )
     seed: int | None = Field(None, description="Random seed; same seed gives identical runs")
+    spikes: list[Spike] = Field(default_factory=list, description="Traffic spikes during the run")
 
     @property
     def is_random(self) -> bool:
@@ -58,6 +71,15 @@ class SimResults(BaseModel):
     avg_wait_time: float = Field(description="Queue wait, over jobs that started")
     avg_processing_time: float = Field(description="Over completed jobs")
     avg_latency: float = Field(description="Arrival to completion, over completed jobs")
+    p50_latency: float = Field(description="Median latency, over completed jobs")
+    p95_latency: float = Field(description="95% of completed jobs finished within this")
+    p99_latency: float = Field(description="99% of completed jobs finished within this")
+
+    # Spikes
+    spike_recovery: list[float | None] = Field(
+        description="Per spike: seconds after it ended until the queue returned to its "
+        "pre-spike depth (None = never recovered during the run)"
+    )
 
     # Capacity
     throughput: float = Field(description="Completed events per simulated second")

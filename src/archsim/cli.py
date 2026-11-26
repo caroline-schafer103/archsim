@@ -3,6 +3,7 @@
     archsim run --rate 10 --workers 5 --service-time 2 --duration 60
     archsim run --rate 10 --workers 5 10 20 --service-time 2 --duration 60
     archsim run ... --arrivals poisson --service exponential --seed 42
+    archsim run ... --spike 120:60:3
     archsim run ... --json results.json
 """
 
@@ -11,7 +12,7 @@ import json
 import random
 from pathlib import Path
 
-from archsim.models import SimConfig, SimResults
+from archsim.models import SimConfig, SimResults, Spike
 from archsim.runner import compare
 
 ROWS: list[tuple[str, str]] = [
@@ -25,9 +26,27 @@ ROWS: list[tuple[str, str]] = [
     ("Avg wait (s)", "avg_wait_time"),
     ("Avg processing (s)", "avg_processing_time"),
     ("Avg latency (s)", "avg_latency"),
+    ("P50 latency (s)", "p50_latency"),
+    ("P95 latency (s)", "p95_latency"),
+    ("P99 latency (s)", "p99_latency"),
     ("Throughput (/s)", "throughput"),
     ("Utilization", "utilization"),
 ]
+SPIKE_ROW = ("Spike recovery (s)", "spike_recovery")
+
+# Warn when more than this share of events never finished.
+UNFINISHED_WARNING_THRESHOLD = 0.05
+
+
+def parse_spike(text: str) -> Spike:
+    """Parse START:DURATION:MULTIPLIER, e.g. '120:60:3'."""
+    try:
+        start, duration, multiplier = (float(x) for x in text.split(":"))
+        return Spike(start=start, duration=duration, multiplier=multiplier)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"invalid spike '{text}': expected START:DURATION:MULTIPLIER, e.g. 120:60:3"
+        ) from e
 
 
 def _get(result: SimResults, path: str) -> object:
@@ -38,12 +57,17 @@ def _get(result: SimResults, path: str) -> object:
 
 
 def _fmt(value: object) -> str:
+    if value is None:
+        return "never"
+    if isinstance(value, list):
+        return ", ".join(_fmt(v) for v in value)
     return f"{value:.2f}" if isinstance(value, float) else str(value)
 
 
 def print_table(results: list[SimResults]) -> None:
+    row_specs = ROWS + ([SPIKE_ROW] if results[0].config.spikes else [])
     headers = [""] + [r.config.name for r in results]
-    rows = [[label] + [_fmt(_get(r, path)) for r in results] for label, path in ROWS]
+    rows = [[label] + [_fmt(_get(r, path)) for r in results] for label, path in row_specs]
     widths = [max(len(row[i]) for row in [headers, *rows]) for i in range(len(headers))]
 
     def line(cells: list[str]) -> str:
@@ -55,6 +79,16 @@ def print_table(results: list[SimResults]) -> None:
     print("-" * len(line(headers)))
     for row in rows:
         print(line(row))
+
+
+def print_warnings(results: list[SimResults]) -> None:
+    for r in results:
+        unfinished = r.generated - r.completed
+        if r.generated and unfinished / r.generated > UNFINISHED_WARNING_THRESHOLD:
+            print(
+                f"\nWarning ({r.config.name}): {unfinished} of {r.generated} events never finished. "
+                "Latency figures only cover completed events, so they understate the real delay."
+            )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -79,6 +113,14 @@ def main(argv: list[str] | None = None) -> None:
         help="constant: fixed processing time (default); exponential: random around the average",
     )
     p.add_argument("--seed", type=int, help="Random seed for reproducible runs (random runs only)")
+    p.add_argument(
+        "--spike",
+        type=parse_spike,
+        action="append",
+        default=[],
+        metavar="START:DURATION:MULTIPLIER",
+        help="Traffic spike, e.g. 120:60:3 = 3x traffic from t=120s for 60s (repeatable)",
+    )
     p.add_argument("--json", type=Path, help="Write full results (incl. timeseries) to this file")
     p.add_argument("--chart", type=Path, help="Save a queue-depth chart (.png or .svg)")
 
@@ -98,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
             arrivals=args.arrivals,
             service=args.service,
             seed=seed,
+            spikes=args.spike,
         )
         for w in args.workers
     ]
@@ -106,8 +149,11 @@ def main(argv: list[str] | None = None) -> None:
     summary = f"Arrivals: {args.arrivals} | Processing: {args.service}"
     if is_random:
         summary += f" | Seed: {seed}"
+    for s in args.spike:
+        summary += f"\nSpike: {s.multiplier:g}x traffic from t={s.start:g}s to t={s.end:g}s"
     print(summary + "\n")
     print_table(results)
+    print_warnings(results)
 
     if args.json:
         args.json.write_text(json.dumps([r.model_dump() for r in results], indent=2))

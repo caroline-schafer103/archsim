@@ -32,6 +32,8 @@ ArchSim closes that gap: it turns an architecture description into something you
 | "Can we handle a 4x traffic increase?" | Rerun with the new arrival rate and see wait time and backlog |
 | "Why is latency high when workers are idle?" vs. "Why is it high when they're saturated?" | Utilization and wait time separate *processing* cost from *queueing* cost |
 | "What does 'the system can't keep up' actually look like?" | Watch queue depth and latency grow without bound once arrivals exceed capacity |
+| "If traffic doubles for a minute, how long until we recover?" | Add a spike and read the recovery time |
+| "Will we meet a P95 latency target?" | Compare P95/P99 latency across configurations |
 
 ## What it does today
 
@@ -49,13 +51,17 @@ You configure:
 - **Simulation duration**
 - **Variability:** arrivals evenly spaced (`constant`) or random like real traffic (`poisson`); processing time fixed (`constant`) or varying (`exponential`)
 - **Seed** for reproducible random runs. Every configuration in a comparison sees the *same* arrival stream, so differences come from the architecture, not luck.
+- **Traffic spikes:** periods of increased load, e.g. `--spike 200:60:2` for 2x traffic from t=200s for 60s (repeatable)
 
 And get back:
 
 - Events generated, completed, still queued, and in progress
 - Average and maximum queue depth (time-weighted)
 - Average wait, processing time, and end-to-end latency
+- Latency percentiles: P50, P95, P99
 - Throughput and worker utilization
+- **Spike recovery time:** how long after a spike ends until the queue is back to its pre-spike level
+- A warning when many events never finished, since latency figures then understate the real delay
 - A queue depth chart comparing every configuration (`--chart`, PNG or SVG)
 - A full timeseries of queue depth and busy workers (`--json`)
 
@@ -114,6 +120,33 @@ Utilization               0.98        0.90        0.79
 
 This is one of the most important (and least intuitive) lessons in capacity planning: **systems running near 100% utilization have wait times that grow sharply, even when the averages say there's enough capacity.**
 
+### Example: how long until we recover from a traffic spike?
+
+Steady-state capacity is only half the story. What happens when traffic doubles for a minute, and how long until the system is healthy again?
+
+```
+$ archsim run --rate 10 --workers 22 25 30 --service-time 2 --duration 600 \
+    --arrivals poisson --service exponential --seed 42 --spike 200:60:2 --chart spike.png
+
+Arrivals: poisson | Processing: exponential | Seed: 42
+Spike: 2x traffic from t=200s to t=260s
+
+                    22 workers  25 workers  30 workers
+------------------------------------------------------
+Max queue depth            474         375         238
+P50 latency (s)          20.98        3.03        1.98
+P95 latency (s)          39.83       26.94       13.21
+P99 latency (s)          43.09       30.48       16.42
+Utilization               0.97        0.87        0.73
+Spike recovery (s)       never      134.02       33.95
+```
+
+![Queue depth during and after a 2x traffic spike](docs/spike-queue-depth.png)
+
+**Reading the result:** all three configurations handle normal traffic, and all three build a backlog during the spike. The difference is what happens *afterwards*. Recovery speed depends on **spare capacity**: 30 workers have 5/s of headroom and drain the backlog in ~34s; 25 workers have 2.5/s and take over two minutes; 22 workers have so little headroom that they're still recovering when the simulation ends, five minutes later.
+
+The percentiles tell a similar story: with 25 workers, the *median* event looks fine (3s), but 1 in 20 events takes 27s or more. Averages hide that tail; P95 and P99 expose it.
+
 ### Reading the queue depth chart
 
 The summary numbers tell you *whether* there's a problem; the chart's shape tells you *what kind*:
@@ -132,8 +165,10 @@ Even in this first version, ArchSim lets you:
 1. **Replace guesses with numbers.** Capacity questions get a concrete answer in under a second.
 2. **See the cost of under-provisioning.** Not just "it's slow", but *how* slow, how fast the backlog grows, and how many jobs are stuck. The chart makes it visible at a glance, and is easy to drop into a design doc or PR.
 3. **Compare options side by side.** Evaluate several configurations in a single command.
-4. **Plan for realistic traffic, not averages.** Random arrivals and processing times reveal how much headroom you actually need, a question back-of-envelope math gets wrong.
-5. **Build intuition.** The results make queueing behavior (utilization, backlog, wait vs. processing time) visible and explainable.
+4. **Know your recovery time.** See how long a traffic spike keeps hurting users after it's over, and how much headroom it takes to bounce back quickly.
+5. **Measure what users feel.** P95/P99 latency shows the slow tail that averages hide, the same metrics real SLOs are written in.
+6. **Plan for realistic traffic, not averages.** Random arrivals and processing times reveal how much headroom you actually need, a question back-of-envelope math gets wrong.
+7. **Build intuition.** The results make queueing behavior (utilization, backlog, wait vs. processing time) visible and explainable.
 
 ## Quickstart
 
@@ -163,6 +198,7 @@ src/archsim/
     core.py        Virtual clock + event scheduler
     components.py  Source, Queue, WorkerPool, Sink
     distributions.py  Constant and exponential timing
+    rates.py       Time-varying arrival rates (spikes)
     metrics.py     Time-weighted metric recording
   models.py      Config and result schemas (Pydantic)
   charts.py      Queue depth chart (matplotlib)
@@ -177,7 +213,7 @@ Components connect through a single `receive(job)` interface, so more complex to
 
 The model is deliberately simple. Each assumption will be relaxed over time:
 
-- Arrival rate and average processing time don't change during a run (no traffic spikes yet)
+- Load changes are step changes (spikes start and stop instantly, no gradual ramps)
 - Randomness is limited to Poisson arrivals and exponential processing times
 - FIFO queue with unlimited capacity
 - Workers process one event at a time and never fail
@@ -191,7 +227,8 @@ The engine's results are tested against hand-computed answers for deterministic 
 - [x] Single-pipeline simulation with side-by-side comparison
 - [x] Queue depth chart
 - [x] Random arrival and processing times
-- [ ] Traffic spikes and time-varying load
+- [x] Traffic spikes and recovery time
+- [x] Latency percentiles (P50/P95/P99)
 - [ ] Multi-stage architectures (multiple queues, services, and worker pools)
 - [ ] Failure modeling: worker outages, retries, dead-letter queues
 - [ ] Requirement checks, e.g. "P95 latency under 5s"
